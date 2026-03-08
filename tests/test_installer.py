@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,9 @@ def test_verify_installation_rejects_non_discoverable_manifest_path_on_linux(tmp
 
 
 def test_verify_installation_reports_non_executable_posix_host(tmp_path: Path) -> None:
+    if sys.platform.startswith("win"):
+        pytest.skip("Windows does not preserve POSIX executable bits for these temp files")
+
     executable = tmp_path / "bin" / "python-input-control"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\n", encoding="utf-8")

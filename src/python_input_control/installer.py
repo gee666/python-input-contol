@@ -123,7 +123,7 @@ def default_manifest_path(
     local_appdata_dir: Path | None = None,
 ) -> Path:
     resolved_platform = platform_name or detect_platform_name()
-    home = (home_dir or Path.home()).expanduser()
+    home = (home_dir or _default_home_dir()).expanduser()
 
     if resolved_platform == "linux":
         return home / ".config" / "google-chrome" / "NativeMessagingHosts" / f"{host_name}.json"
@@ -452,6 +452,13 @@ def _launcher_candidates(script_name: str, *, platform_name: PlatformName | None
     return deduplicated
 
 
+def _default_home_dir() -> Path:
+    home = os.environ.get("HOME")
+    if home:
+        return Path(home)
+    return Path.home()
+
+
 def _default_local_appdata_dir(home_dir: Path) -> Path:
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
@@ -493,15 +500,20 @@ def _verify_host_executable(
         issues.append(f"Host executable is not a file: {plan.executable_path}")
         return issues
 
-    if plan.platform_name in {"linux", "macos"} and not os.access(plan.executable_path, os.X_OK):
+    try:
+        current_platform = detect_platform_name()
+    except ValueError:
+        current_platform = None
+
+    if (
+        plan.platform_name in {"linux", "macos"}
+        and current_platform in {"linux", "macos"}
+        and not _is_posix_executable(plan.executable_path)
+    ):
         issues.append(f"Host executable is not executable: {plan.executable_path}")
 
     runner = probe_runner
     if runner is None:
-        try:
-            current_platform = detect_platform_name()
-        except ValueError:
-            current_platform = None
         if current_platform == plan.platform_name:
             runner = _run_host_executable_probe
 
@@ -622,7 +634,7 @@ def _verify_windows_registry_pointer(registry_path: str, manifest_path: Path) ->
     if not isinstance(value, str) or not value:
         return f"Chrome registry key must contain a manifest path string, found {value!r}"
     if value.startswith('"') or value.endswith('"'):
-        return f"Chrome registry key must store an unquoted absolute manifest path, found {value!r}"
+        return f"Chrome registry key must store an unquoted absolute manifest path, found '{value}'"
     if not _is_absolute_path_string(value):
         return f"Chrome registry key must store an absolute manifest path, found {value!r}"
     if _normalized_path_string(value) != _normalized_path_string(manifest_path):
@@ -632,6 +644,11 @@ def _verify_windows_registry_pointer(registry_path: str, manifest_path: Path) ->
 
 def _is_absolute_path_string(value: str) -> bool:
     return Path(value).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def _is_posix_executable(path: Path) -> bool:
+    mode = path.stat().st_mode
+    return bool(mode & 0o111)
 
 
 def _normalized_path_string(value: str | Path) -> str:
