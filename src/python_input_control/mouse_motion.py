@@ -127,7 +127,7 @@ def build_scroll_steps(
         return []
 
     step_count = _estimate_scroll_step_count(total_tick_magnitude)
-    resolved_duration_ms = duration_ms or estimate_scroll_duration_ms(max(abs(delta_x_css), abs(delta_y_css)))
+    resolved_duration_ms = duration_ms if duration_ms is not None else estimate_scroll_duration_ms(max(abs(delta_x_css), abs(delta_y_css)))
 
     horizontal_parts = _allocate_integer_total(horizontal_ticks, step_count, rng)
     vertical_parts = _allocate_integer_total(vertical_ticks, step_count, rng)

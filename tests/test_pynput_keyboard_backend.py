@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+
+import pytest
 
 from python_input_control.backends import BackendExecutionContext
 from python_input_control.backends.pynput_keyboard import (
     CharacterKeyPlan,
     KeyboardKey,
     PynputKeyboardBackend,
-    keyboard_key_for_modifier,
+    PynputKeyboardSink,
+    normalize_key_name,
     plan_character_key,
 )
-from python_input_control.models import BrowserContext, KeyEscapeCommand, KeyTabCommand, ModifierKey, SelectAllAndDeleteCommand, TypeCommand
+from python_input_control.models import BrowserContext, PressKeyCommand, PressShortcutCommand, TypeCommand
 from python_input_control.platform import SystemPlatformAdapter
 
 
@@ -69,6 +73,22 @@ class RecordingSink:
     def release_character(self, character: str) -> None:
         self.events.append(("release_character", character))
 
+    def press_special_key(self, key_name: str) -> None:
+        self.events.append(("press_special_key", key_name))
+
+    def release_special_key(self, key_name: str) -> None:
+        self.events.append(("release_special_key", key_name))
+
+
+@dataclass
+class FailingSpecialKeySink(RecordingSink):
+    failing_key_name: str = "page_down"
+
+    def press_special_key(self, key_name: str) -> None:
+        super().press_special_key(key_name)
+        if key_name == self.failing_key_name:
+            raise RuntimeError("failed to press special key")
+
 
 @dataclass
 class RecordingSleep:
@@ -76,6 +96,7 @@ class RecordingSleep:
 
     def __call__(self, delay_seconds: float) -> None:
         self.calls.append(delay_seconds)
+
 
 
 def _runtime(rng: FakeRandom, sleep: RecordingSleep) -> BackendExecutionContext:
@@ -92,32 +113,148 @@ def test_plan_character_key_preserves_unicode_without_shift() -> None:
     assert plan_character_key("\n") == CharacterKeyPlan(special_key=KeyboardKey.ENTER)
 
 
-def test_press_tab_taps_tab_key() -> None:
+@pytest.mark.parametrize(
+    ("raw_key", "expected"),
+    [
+        ("ctrl", "control"),
+        ("esc", "escape"),
+        ("page-down", "page_down"),
+        ("Page Down", "page_down"),
+        ("cmd", "command"),
+        ("meta", "command"),
+        ("option", "alt"),
+        ("arrowleft", "left"),
+        ("prtsc", "print_screen"),
+    ],
+)
+def test_normalize_key_name_handles_common_aliases(raw_key: str, expected: str) -> None:
+    assert normalize_key_name(raw_key) == expected
+
+
+def test_press_key_taps_special_key_with_repeat() -> None:
     sink = RecordingSink()
     backend = PynputKeyboardBackend(sink_factory=lambda: sink)
     sleep = RecordingSleep()
 
-    backend.press_tab(KeyTabCommand(id="tab-1", context=_browser_context()), _runtime(FakeRandom(), sleep))
+    backend.press_key(PressKeyCommand(id="tab-1", context=_browser_context(), key="tab", repeat=2), _runtime(FakeRandom(), sleep))
 
     assert sink.events == [
+        ("press_key", KeyboardKey.TAB),
+        ("release_key", KeyboardKey.TAB),
         ("press_key", KeyboardKey.TAB),
         ("release_key", KeyboardKey.TAB),
     ]
     assert sleep.calls == []
 
 
-def test_press_escape_taps_escape_key() -> None:
+def test_press_key_supports_alias_special_key_names() -> None:
     sink = RecordingSink()
     backend = PynputKeyboardBackend(sink_factory=lambda: sink)
-    sleep = RecordingSleep()
 
-    backend.press_escape(KeyEscapeCommand(id="esc-1", context=_browser_context()), _runtime(FakeRandom(), sleep))
+    backend.press_key(PressKeyCommand(id="esc-1", context=_browser_context(), key="esc", repeat=1), _runtime(FakeRandom(), RecordingSleep()))
 
     assert sink.events == [
         ("press_key", KeyboardKey.ESCAPE),
         ("release_key", KeyboardKey.ESCAPE),
     ]
-    assert sleep.calls == []
+
+
+def test_press_key_taps_single_character() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+
+    backend.press_key(PressKeyCommand(id="char-1", context=_browser_context(), key="A", repeat=1), _runtime(FakeRandom(), RecordingSleep()))
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.SHIFT),
+        ("press_character", "a"),
+        ("release_character", "a"),
+        ("release_key", KeyboardKey.SHIFT),
+    ]
+
+
+def test_press_key_taps_single_whitespace_character_as_special_key() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+
+    backend.press_key(PressKeyCommand(id="space-1", context=_browser_context(), key=" ", repeat=1), _runtime(FakeRandom(), RecordingSleep()))
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.SPACE),
+        ("release_key", KeyboardKey.SPACE),
+    ]
+
+
+def test_press_key_supports_non_enum_special_keys() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+
+    backend.press_key(PressKeyCommand(id="page-down-1", context=_browser_context(), key="Page Down", repeat=1), _runtime(FakeRandom(), RecordingSleep()))
+
+    assert sink.events == [
+        ("press_special_key", "page_down"),
+        ("release_special_key", "page_down"),
+    ]
+
+
+def test_press_shortcut_holds_modifiers_and_taps_last_key() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+    sleep = RecordingSleep()
+    runtime = _runtime(FakeRandom(uniform_values=[80.0]), sleep)
+
+    backend.press_shortcut(
+        PressShortcutCommand(id="shortcut-1", context=_browser_context(), keys=("control", "shift", "p")),
+        runtime,
+    )
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.CONTROL),
+        ("press_key", KeyboardKey.SHIFT),
+        ("press_character", "p"),
+        ("release_character", "p"),
+        ("release_key", KeyboardKey.SHIFT),
+        ("release_key", KeyboardKey.CONTROL),
+    ]
+    assert sleep.calls == [0.08]
+
+
+def test_press_shortcut_accepts_aliases_for_modifiers_and_terminal_key() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+    sleep = RecordingSleep()
+
+    backend.press_shortcut(
+        PressShortcutCommand(id="shortcut-2", context=_browser_context(), keys=("ctrl", "cmd", "esc")),
+        _runtime(FakeRandom(uniform_values=[60.0]), sleep),
+    )
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.CONTROL),
+        ("press_key", KeyboardKey.COMMAND),
+        ("press_key", KeyboardKey.ESCAPE),
+        ("release_key", KeyboardKey.ESCAPE),
+        ("release_key", KeyboardKey.COMMAND),
+        ("release_key", KeyboardKey.CONTROL),
+    ]
+    assert sleep.calls == [0.06]
+
+
+def test_press_shortcut_releases_already_held_keys_when_pressing_later_key_fails() -> None:
+    sink = FailingSpecialKeySink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+
+    with pytest.raises(RuntimeError, match="failed to press special key"):
+        backend.press_shortcut(
+            PressShortcutCommand(id="shortcut-3", context=_browser_context(), keys=("control", "Page Down", "a")),
+            _runtime(FakeRandom(), RecordingSleep()),
+        )
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.CONTROL),
+        ("press_special_key", "page_down"),
+        ("release_key", KeyboardKey.CONTROL),
+    ]
 
 
 def test_type_text_emits_shift_sequences_and_direct_unicode() -> None:
@@ -158,28 +295,12 @@ def test_type_text_adds_extra_pause_after_space() -> None:
     ]
 
 
-def test_select_all_and_delete_uses_modifier_specific_combo() -> None:
-    for modifier, expected_key in (
-        (ModifierKey.CONTROL, KeyboardKey.CONTROL),
-        (ModifierKey.COMMAND, KeyboardKey.COMMAND),
-    ):
-        sink = RecordingSink()
-        backend = PynputKeyboardBackend(sink_factory=lambda sink=sink: sink)
-        runtime = _runtime(FakeRandom(uniform_values=[80.0]), sleep=RecordingSleep())
+def test_pynput_keyboard_sink_resolves_alias_special_keys() -> None:
+    controller = SimpleNamespace(press=lambda _key: None, release=lambda _key: None)
+    key_namespace = SimpleNamespace(esc="ESC", ctrl="CTRL", page_down="PGDN", print_screen="PRTSC")
+    sink = PynputKeyboardSink(controller=controller, key_namespace=key_namespace)
 
-        backend.select_all_and_delete(
-            SelectAllAndDeleteCommand(id="clear-1", context=_browser_context()),
-            modifier,
-            runtime,
-        )
-
-        assert keyboard_key_for_modifier(modifier) == expected_key
-        assert sink.events == [
-            ("press_key", expected_key),
-            ("press_character", "a"),
-            ("release_character", "a"),
-            ("release_key", expected_key),
-            ("press_key", KeyboardKey.DELETE),
-            ("release_key", KeyboardKey.DELETE),
-        ]
-        assert runtime.sleep.calls == [0.08]
+    assert sink._resolve_special_key("esc") == "ESC"
+    assert sink._resolve_special_key("ctrl") == "CTRL"
+    assert sink._resolve_special_key("Page Down") == "PGDN"
+    assert sink._resolve_special_key("prtsc") == "PRTSC"

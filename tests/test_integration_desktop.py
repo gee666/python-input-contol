@@ -265,7 +265,7 @@ def test_mouse_move_positions_cursor_on_real_desktop(
 
 
 @pytest.mark.usefixtures("restore_cursor")
-def test_mouse_left_click_is_received_by_test_target(
+def test_mouse_click_is_received_by_test_target(
     desktop_harness_factory: Callable[..., DesktopHarness],
     invoke_host_command: Callable[..., tuple[dict[str, Any], str]],
 ) -> None:
@@ -274,8 +274,8 @@ def test_mouse_left_click_is_received_by_test_target(
     target = harness.css_target("click", state)
 
     response, stderr = invoke_host_command(
-        command="mouse_left_click",
-        params={"x": target["x"], "y": target["y"], "move_duration_ms": 240, "hold_ms": 80},
+        command="mouse_click",
+        params={"x": target["x"], "y": target["y"], "button": "left", "count": 1, "move_duration_ms": 240, "hold_ms": 80},
         context=harness.browser_context(state),
     )
 
@@ -351,7 +351,7 @@ def test_scroll_changes_scroll_position_by_expected_tick_total(
 
 
 @pytest.mark.usefixtures("restore_cursor")
-def test_select_all_and_delete_clears_populated_input_field(
+def test_sequence_ctrl_a_then_delete_clears_populated_input_field(
     desktop_harness_factory: Callable[..., DesktopHarness],
     invoke_host_command: Callable[..., tuple[dict[str, Any], str]],
 ) -> None:
@@ -363,8 +363,13 @@ def test_select_all_and_delete_clears_populated_input_field(
     )
 
     response, stderr = invoke_host_command(
-        command="select_all_and_delete",
-        params={},
+        command="sequence",
+        params={
+            "steps": [
+                {"command": "press_shortcut", "params": {"keys": ["control", "a"]}},
+                {"command": "press_key", "params": {"key": "delete"}},
+            ]
+        },
         context=harness.browser_context(state),
     )
 

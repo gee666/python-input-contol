@@ -7,20 +7,20 @@ from typing import Literal, TypeAlias
 ResponseStatus: TypeAlias = Literal["ok", "error"]
 CommandName: TypeAlias = Literal[
     "mouse_move",
-    "mouse_left_click",
-    "mouse_right_click",
-    "mouse_double_click",
+    "mouse_click",
     "scroll",
-    "key_tab",
-    "key_escape",
     "type",
-    "select_all_and_delete",
+    "press_key",
+    "press_shortcut",
+    "pause",
+    "sequence",
 ]
 
 
 class MouseButton(str, Enum):
     LEFT = "left"
     RIGHT = "right"
+    MIDDLE = "middle"
 
 
 class ModifierKey(str, Enum):
@@ -75,13 +75,9 @@ class MouseMoveCommand(CoordinateCommand):
 @dataclass(frozen=True)
 class MouseClickCommand(CoordinateCommand):
     button: MouseButton = MouseButton.LEFT
+    count: int = 1
     move_duration_ms: int | None = None
     hold_ms: int | None = None
-
-
-@dataclass(frozen=True)
-class MouseDoubleClickCommand(CoordinateCommand):
-    move_duration_ms: int | None = None
     interval_ms: int | None = None
 
 
@@ -93,36 +89,44 @@ class ScrollCommand(CoordinateCommand):
 
 
 @dataclass(frozen=True)
-class KeyTabCommand(BaseCommand):
-    pass
-
-
-@dataclass(frozen=True)
-class KeyEscapeCommand(BaseCommand):
-    pass
-
-
-@dataclass(frozen=True)
 class TypeCommand(BaseCommand):
     text: str
     wpm: float | None = None
 
 
 @dataclass(frozen=True)
-class SelectAllAndDeleteCommand(BaseCommand):
-    pass
+class PressKeyCommand(BaseCommand):
+    key: str
+    repeat: int = 1
 
 
-Command: TypeAlias = (
+@dataclass(frozen=True)
+class PressShortcutCommand(BaseCommand):
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PauseCommand(BaseCommand):
+    duration_ms: int
+
+
+SequenceStepCommand: TypeAlias = (
     MouseMoveCommand
     | MouseClickCommand
-    | MouseDoubleClickCommand
     | ScrollCommand
-    | KeyTabCommand
-    | KeyEscapeCommand
     | TypeCommand
-    | SelectAllAndDeleteCommand
+    | PressKeyCommand
+    | PressShortcutCommand
+    | PauseCommand
 )
+
+
+@dataclass(frozen=True)
+class SequenceCommand(BaseCommand):
+    steps: tuple[SequenceStepCommand, ...]
+
+
+Command: TypeAlias = SequenceStepCommand | SequenceCommand
 
 
 @dataclass(frozen=True)

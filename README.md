@@ -9,7 +9,7 @@ This layer implements:
 - Chrome Native Messaging framing over stdin/stdout
 - Sequential host processing with one response per request
 - Stable response envelopes: `id`, `status`, `error`
-- Validation and typed command models for all PRD commands
+- Validation and typed command models for the supported protocol commands
 - Coordinate translation helpers for browser viewport -> physical screen space
 - Injectable platform, randomness, timing, mouse, and keyboard contracts
 - Concrete `pyautogui` and `pynput` runtime backends for mouse and keyboard automation
@@ -127,6 +127,154 @@ Example response:
   "id": "1234",
   "status": "ok",
   "error": null
+}
+```
+
+### Supported commands
+
+The host accepts exactly these command names:
+
+- `mouse_move`
+- `mouse_click`
+- `scroll`
+- `type`
+- `press_key`
+- `press_shortcut`
+- `pause`
+- `sequence`
+
+Removed legacy command names are no longer supported:
+
+- `mouse_left_click`
+- `mouse_right_click`
+- `mouse_double_click`
+- `key_tab`
+- `key_escape`
+- `select_all_and_delete`
+
+### Command shapes
+
+#### `mouse_move`
+
+```json
+{
+  "command": "mouse_move",
+  "params": {"x": 640, "y": 480, "duration_ms": 400}
+}
+```
+
+#### `mouse_click`
+
+`mouse_click` generalizes button and click count.
+
+- `button`: `left` | `right` | `middle` (default `left`)
+- `count`: positive integer click count (default `1`)
+- `move_duration_ms`, `hold_ms`, `interval_ms`: optional timing controls
+
+```json
+{
+  "command": "mouse_click",
+  "params": {
+    "x": 640,
+    "y": 480,
+    "button": "right",
+    "count": 2,
+    "move_duration_ms": 200,
+    "hold_ms": 80,
+    "interval_ms": 120
+  }
+}
+```
+
+#### `scroll`
+
+```json
+{
+  "command": "scroll",
+  "params": {
+    "x": 640,
+    "y": 480,
+    "delta_x": 0,
+    "delta_y": 600,
+    "duration_ms": 450
+  }
+}
+```
+
+#### `type`
+
+```json
+{
+  "command": "type",
+  "params": {"text": "Hello world", "wpm": 120}
+}
+```
+
+#### `press_key`
+
+- `key`: arbitrary key name
+- `repeat`: optional positive integer, default `1`
+
+```json
+{
+  "command": "press_key",
+  "params": {"key": "escape", "repeat": 2}
+}
+```
+
+#### `press_shortcut`
+
+Prefer `keys` as the canonical parameter shape.
+
+```json
+{
+  "command": "press_shortcut",
+  "params": {"keys": ["control", "shift", "p"]}
+}
+```
+
+A convenience string alias may also be accepted by the host:
+
+```json
+{
+  "command": "press_shortcut",
+  "params": {"shortcut": "ctrl+shift+p"}
+}
+```
+
+#### `pause`
+
+```json
+{
+  "command": "pause",
+  "params": {"duration_ms": 250}
+}
+```
+
+#### `sequence`
+
+`sequence` executes ordered steps. Nested `sequence` steps are intentionally rejected for now.
+
+Supported step commands include at least:
+
+- `press_key`
+- `press_shortcut`
+- `type`
+- `pause`
+
+The current implementation also accepts pointer-oriented steps such as `mouse_move`, `mouse_click`, and `scroll`.
+
+Example: select all, then delete.
+
+```json
+{
+  "command": "sequence",
+  "params": {
+    "steps": [
+      {"command": "press_shortcut", "params": {"keys": ["control", "a"]}},
+      {"command": "press_key", "params": {"key": "delete"}}
+    ]
+  }
 }
 ```
 

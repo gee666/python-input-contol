@@ -53,6 +53,7 @@ class FakeMouseController:
         self.horizontal_scrolls.append(clicks)
 
 
+
 def _browser_context(device_pixel_ratio: float = 1.0) -> BrowserContext:
     return BrowserContext(
         screen_x=100.0,
@@ -85,7 +86,7 @@ def test_move_converts_retina_targets_back_to_pyautogui_space() -> None:
     assert math.isclose(sum(sleeps), 0.24, rel_tol=1e-9, abs_tol=1e-9)
 
 
-def test_click_uses_requested_hold_duration_and_button() -> None:
+def test_click_uses_requested_hold_duration_button_and_count() -> None:
     controller = FakeMouseController(current_position=ScreenPoint(50.0, 50.0))
     sleeps: list[float] = []
     backend = PyAutoGuiMouseBackend(controller=controller, add_post_action_pause=True)
@@ -99,16 +100,59 @@ def test_click_uses_requested_hold_duration_and_button() -> None:
         context=_browser_context(),
         x=0.0,
         y=0.0,
-        button=MouseButton.RIGHT,
+        button=MouseButton.MIDDLE,
+        count=2,
         move_duration_ms=100,
         hold_ms=90,
+        interval_ms=120,
     )
 
     backend.click(command, ScreenPoint(50.0, 50.0), runtime)
 
-    assert controller.button_events == [("down", "right"), ("up", "right")]
+    assert controller.button_events == [
+        ("down", "middle"),
+        ("up", "middle"),
+        ("down", "middle"),
+        ("up", "middle"),
+    ]
     assert sleeps[0] == 0.09
-    assert 0.05 <= sleeps[1] <= 0.15
+    assert sleeps[1] == 0.12
+    assert sleeps[2] == 0.09
+    assert 0.05 <= sleeps[3] <= 0.15
+
+
+def test_click_supports_zero_hold_and_interval_for_multiclick_sequences() -> None:
+    controller = FakeMouseController(current_position=ScreenPoint(75.0, 75.0))
+    sleeps: list[float] = []
+    backend = PyAutoGuiMouseBackend(controller=controller, add_post_action_pause=False)
+    runtime = BackendExecutionContext(
+        platform=FakePlatform(),
+        rng=SeededRandom(42),
+        sleep=sleeps.append,
+    )
+    command = MouseClickCommand(
+        id="click-2",
+        context=_browser_context(),
+        x=0.0,
+        y=0.0,
+        button=MouseButton.RIGHT,
+        count=3,
+        move_duration_ms=0,
+        hold_ms=0,
+        interval_ms=0,
+    )
+
+    backend.click(command, ScreenPoint(75.0, 75.0), runtime)
+
+    assert controller.button_events == [
+        ("down", "right"),
+        ("up", "right"),
+        ("down", "right"),
+        ("up", "right"),
+        ("down", "right"),
+        ("up", "right"),
+    ]
+    assert all(sleep == 0.0 for sleep in sleeps)
 
 
 def test_scroll_sends_vertical_and_horizontal_tick_totals() -> None:
@@ -135,3 +179,29 @@ def test_scroll_sends_vertical_and_horizontal_tick_totals() -> None:
     assert sum(controller.vertical_scrolls) == -8
     assert sum(controller.horizontal_scrolls) == 3
     assert math.isclose(sum(sleeps), 0.6, rel_tol=1e-9, abs_tol=1e-9)
+
+
+def test_scroll_respects_explicit_zero_duration() -> None:
+    controller = FakeMouseController(current_position=ScreenPoint(20.0, 20.0))
+    sleeps: list[float] = []
+    backend = PyAutoGuiMouseBackend(controller=controller, add_post_action_pause=False)
+    runtime = BackendExecutionContext(
+        platform=FakePlatform(),
+        rng=SeededRandom(321),
+        sleep=sleeps.append,
+    )
+    command = ScrollCommand(
+        id="scroll-2",
+        context=_browser_context(),
+        x=0.0,
+        y=0.0,
+        delta_x=300.0,
+        delta_y=800.0,
+        duration_ms=0,
+    )
+
+    backend.scroll(command, ScreenPoint(20.0, 20.0), runtime)
+
+    assert sum(controller.vertical_scrolls) == -8
+    assert sum(controller.horizontal_scrolls) == 3
+    assert all(sleep == 0.0 for sleep in sleeps)

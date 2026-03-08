@@ -11,7 +11,6 @@ import pytest
 import python_input_control.protocol as protocol_module
 from python_input_control.dispatch import CommandDispatcher
 from python_input_control.errors import ProtocolDecodeError, RecoverableFramingError
-from python_input_control.models import ModifierKey
 from python_input_control.protocol import (
     NativeMessagingHost,
     decode_json_message,
@@ -26,8 +25,8 @@ class FakePlatform:
     def platform_name(self) -> str:
         return "linux"
 
-    def select_all_modifier(self) -> ModifierKey:
-        return ModifierKey.CONTROL
+    def select_all_modifier(self):  # pragma: no cover - legacy compatibility only
+        raise AssertionError("select_all_modifier should not be used by redesigned protocol tests")
 
     def virtual_desktop_bounds(self):
         return None
@@ -35,19 +34,17 @@ class FakePlatform:
 
 @dataclass
 class RecordingKeyboardBackend:
-    tab_ids: list[str] = field(default_factory=list)
+    key_calls: list[tuple[str, str, int]] = field(default_factory=list)
 
-    def press_tab(self, command, context) -> None:
-        self.tab_ids.append(command.id)
+    def press_key(self, command, context) -> None:
+        self.key_calls.append((command.id, command.key, command.repeat))
 
-    def press_escape(self, command, context) -> None:  # pragma: no cover - not used here
-        raise AssertionError("unexpected press_escape")
+    def press_shortcut(self, command, context) -> None:  # pragma: no cover - not used here
+        raise AssertionError("unexpected press_shortcut")
 
     def type_text(self, command, context) -> None:  # pragma: no cover - not used here
         raise AssertionError("unexpected type_text")
 
-    def select_all_and_delete(self, command, modifier, context) -> None:  # pragma: no cover - not used here
-        raise AssertionError("unexpected select_all_and_delete")
 
 
 def _context() -> dict[str, float]:
@@ -64,13 +61,15 @@ def _context() -> dict[str, float]:
     }
 
 
-def _message(command_id: str, *, command: str = "key_tab", params: dict[str, Any] | None = None) -> dict[str, Any]:
+
+def _message(command_id: str, *, command: str = "press_key", params: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": command_id,
         "command": command,
-        "params": params or {},
+        "params": params or {"key": "tab"},
         "context": _context(),
     }
+
 
 
 def _extract_framed_responses(stream_bytes: bytes) -> list[dict[str, Any]]:
@@ -83,8 +82,10 @@ def _extract_framed_responses(stream_bytes: bytes) -> list[dict[str, Any]]:
         responses.append(dict(decode_json_message(payload)))
 
 
+
 def _framed_payload_length(message: bytes) -> int:
     return struct.unpack("=I", message[:4])[0]
+
 
 
 def _json_message_with_minimum_payload_size(size: int) -> dict[str, str]:
@@ -158,7 +159,7 @@ def test_host_recovers_from_malformed_json_and_keeps_serving() -> None:
         {"id": None, "status": "error", "error": "Malformed JSON: Expecting property name enclosed in double quotes"},
         {"id": "ok-1", "status": "ok", "error": None},
     ]
-    assert keyboard_backend.tab_ids == ["ok-1"]
+    assert keyboard_backend.key_calls == [("ok-1", "tab", 1)]
     assert "Malformed JSON" in error_stream.getvalue()
 
 
@@ -199,7 +200,7 @@ def test_host_recovers_from_oversized_message_frame_and_keeps_serving(monkeypatc
         {"id": None, "status": "error", "error": expected_error},
         {"id": "ok-1", "status": "ok", "error": None},
     ]
-    assert keyboard_backend.tab_ids == ["ok-1"]
+    assert keyboard_backend.key_calls == [("ok-1", "tab", 1)]
     assert error_stream.getvalue() == f"python-input-control: {expected_error}\n"
 
 
@@ -241,7 +242,7 @@ def test_host_discards_oversized_payload_before_reading_the_next_frame(monkeypat
         {"id": None, "status": "error", "error": expected_error},
         {"id": "real", "status": "ok", "error": None},
     ]
-    assert keyboard_backend.tab_ids == ["real"]
+    assert keyboard_backend.key_calls == [("real", "tab", 1)]
     assert "ghost" not in output_stream.getvalue().decode("utf-8", errors="ignore")
     assert error_stream.getvalue() == f"python-input-control: {expected_error}\n"
 
@@ -280,7 +281,7 @@ def test_host_returns_error_and_exits_when_an_oversized_frame_cannot_be_fully_di
         {"id": "ok-1", "status": "ok", "error": None},
         {"id": None, "status": "error", "error": "Unexpected EOF while reading native message stream"},
     ]
-    assert keyboard_backend.tab_ids == ["ok-1"]
+    assert keyboard_backend.key_calls == [("ok-1", "tab", 1)]
     assert error_stream.getvalue() == "python-input-control: Unexpected EOF while reading native message stream\n"
 
 
@@ -310,7 +311,7 @@ def test_host_returns_error_and_exits_on_unrecoverable_truncated_message_frame()
         {"id": "ok-1", "status": "ok", "error": None},
         {"id": None, "status": "error", "error": "Unexpected EOF while reading native message stream"},
     ]
-    assert keyboard_backend.tab_ids == ["ok-1"]
+    assert keyboard_backend.key_calls == [("ok-1", "tab", 1)]
     assert error_stream.getvalue() == "python-input-control: Unexpected EOF while reading native message stream\n"
 
 
@@ -368,7 +369,7 @@ def test_host_processes_100_back_to_back_commands_in_order() -> None:
     responses = _extract_framed_responses(output_stream.getvalue())
 
     assert exit_code == 0
-    assert keyboard_backend.tab_ids == [f"cmd-{index:03d}" for index in range(100)]
-    assert [response["id"] for response in responses] == keyboard_backend.tab_ids
+    assert keyboard_backend.key_calls == [(f"cmd-{index:03d}", "tab", 1) for index in range(100)]
+    assert [response["id"] for response in responses] == [command_id for command_id, _, _ in keyboard_backend.key_calls]
     assert all(response == {"id": response["id"], "status": "ok", "error": None} for response in responses)
     assert error_stream.getvalue() == ""

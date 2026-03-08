@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..errors import BackendUnavailableError
-from ..models import BrowserContext, MouseButton, MouseClickCommand, MouseDoubleClickCommand, MouseMoveCommand, ScreenPoint, ScrollCommand
+from ..models import BrowserContext, MouseButton, MouseClickCommand, MouseMoveCommand, ScreenPoint, ScrollCommand
 from ..mouse_motion import (
     build_mouse_path,
     build_scroll_steps,
@@ -36,9 +36,6 @@ class UnavailablePyAutoGuiMouseBackend(MouseBackend):
         raise BackendUnavailableError(self.message, command.id)
 
     def click(self, command: MouseClickCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
-        raise BackendUnavailableError(self.message, command.id)
-
-    def double_click(self, command: MouseDoubleClickCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
         raise BackendUnavailableError(self.message, command.id)
 
     def scroll(self, command: ScrollCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
@@ -89,15 +86,12 @@ class PyAutoGuiMouseBackend(MouseBackend):
     def click(self, command: MouseClickCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
         self._move_cursor(command.context, target, command.move_duration_ms, context)
         hold_ms = command.hold_ms if command.hold_ms is not None else default_click_hold_ms(context.rng)
-        self._button_press(command.button, hold_ms, context)
-        self._post_action_pause(context)
-
-    def double_click(self, command: MouseDoubleClickCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
-        self._move_cursor(command.context, target, command.move_duration_ms, context)
-        self._button_press(MouseButton.LEFT, default_click_hold_ms(context.rng), context)
         interval_ms = command.interval_ms if command.interval_ms is not None else default_double_click_interval_ms(context.rng)
-        context.sleep(interval_ms / 1000.0)
-        self._button_press(MouseButton.LEFT, default_click_hold_ms(context.rng), context)
+
+        for index in range(command.count):
+            self._button_press(command.button, hold_ms, context)
+            if index < command.count - 1:
+                context.sleep(interval_ms / 1000.0)
         self._post_action_pause(context)
 
     def scroll(self, command: ScrollCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
