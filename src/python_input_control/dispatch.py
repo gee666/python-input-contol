@@ -20,6 +20,7 @@ from .models import (
     BrowserContext,
     Command,
     CoordinateCommand,
+    KeyEscapeCommand,
     KeyTabCommand,
     MouseButton,
     MouseClickCommand,
@@ -42,6 +43,7 @@ SUPPORTED_COMMANDS = frozenset(
         "mouse_double_click",
         "scroll",
         "key_tab",
+        "key_escape",
         "type",
         "select_all_and_delete",
     }
@@ -96,6 +98,9 @@ class CommandDispatcher:
                 return
             if isinstance(command, KeyTabCommand):
                 self.keyboard_backend.press_tab(command, self.runtime)
+                return
+            if isinstance(command, KeyEscapeCommand):
+                self.keyboard_backend.press_escape(command, self.runtime)
                 return
             if isinstance(command, TypeCommand):
                 self.keyboard_backend.type_text(command, self.runtime)
@@ -193,6 +198,9 @@ def parse_command(raw_message: Mapping[str, Any]) -> Command:
 
     if command_name == "key_tab":
         return KeyTabCommand(id=command_id, context=context)
+
+    if command_name == "key_escape":
+        return KeyEscapeCommand(id=command_id, context=context)
 
     if command_name == "type":
         return TypeCommand(

@@ -44,7 +44,7 @@ from python_input_control.platform import (
                 scroll_y=0.0,
             ),
             (10.0, 20.0),
-            ScreenPoint(120.0, 175.0),
+            ScreenPoint(220.0, 310.0),
         ),
         (
             BrowserContext(
@@ -74,11 +74,11 @@ from python_input_control.platform import (
                 scroll_y=450.0,
             ),
             (100.0, 200.0),
-            ScreenPoint(180.0, 340.0),
+            ScreenPoint(195.0, 360.0),
         ),
     ],
 )
-def test_translate_viewport_to_physical_screen_matches_prd_formula(
+def test_translate_viewport_to_physical_screen_scales_browser_geometry_into_physical_pixels(
     context: BrowserContext,
     viewport: tuple[float, float],
     expected: ScreenPoint,

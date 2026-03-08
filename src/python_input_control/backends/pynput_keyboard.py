@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
 from ..errors import BackendUnavailableError
-from ..models import KeyTabCommand, ModifierKey, SelectAllAndDeleteCommand, TypeCommand
+from ..models import KeyEscapeCommand, KeyTabCommand, ModifierKey, SelectAllAndDeleteCommand, TypeCommand
 from ..randomness import RandomSource
 from ..timing import jittered_delay_ms, wpm_to_inter_key_delay_ms
 from .keyboard_backend import KeyboardBackend
@@ -51,6 +51,7 @@ _SHIFTED_SYMBOLS = {
 class KeyboardKey(str, Enum):
     TAB = "tab"
     ENTER = "enter"
+    ESCAPE = "escape"
     SHIFT = "shift"
     CONTROL = "control"
     COMMAND = "command"
@@ -78,6 +79,9 @@ class PynputKeyboardBackend(KeyboardBackend):
 
     def press_tab(self, command: KeyTabCommand, context: BackendExecutionContext) -> None:
         self._tap_key(KeyboardKey.TAB)
+
+    def press_escape(self, command: KeyEscapeCommand, context: BackendExecutionContext) -> None:
+        self._tap_key(KeyboardKey.ESCAPE)
 
     def type_text(self, command: TypeCommand, context: BackendExecutionContext) -> None:
         if not command.text:
@@ -176,6 +180,7 @@ class PynputKeyboardSink:
         mapping = {
             KeyboardKey.TAB: key_namespace.tab,
             KeyboardKey.ENTER: key_namespace.enter,
+            KeyboardKey.ESCAPE: key_namespace.esc,
             KeyboardKey.SHIFT: key_namespace.shift,
             KeyboardKey.CONTROL: key_namespace.ctrl,
             KeyboardKey.COMMAND: key_namespace.cmd,
@@ -189,6 +194,9 @@ class UnavailablePynputKeyboardBackend(KeyboardBackend):
         self.message = message
 
     def press_tab(self, command: KeyTabCommand, context: BackendExecutionContext) -> None:
+        raise BackendUnavailableError(self.message, command.id)
+
+    def press_escape(self, command: KeyEscapeCommand, context: BackendExecutionContext) -> None:
         raise BackendUnavailableError(self.message, command.id)
 
     def type_text(self, command: TypeCommand, context: BackendExecutionContext) -> None:

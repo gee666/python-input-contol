@@ -190,7 +190,7 @@ Dispatch passes a `BackendExecutionContext` containing:
 - `rng` — deterministic random source
 - `sleep` — injectable sleep function for tests
 
-Mouse backends receive translated **physical screen coordinates**. If a backend needs a platform-specific coordinate adaptation step (for example pyautogui on macOS Retina), it should call helpers in `python_input_control.platform` before issuing OS calls.
+Mouse backends receive translated **physical screen coordinates**. Browser geometry values collected from JavaScript (`screenX`, `screenY`, `outerWidth`, `innerWidth`, and viewport-relative target coordinates) are treated as browser/CSS units first; the host converts the entire browser offset plus target point into physical pixels before issuing OS input. If a backend needs a platform-specific coordinate adaptation step (for example pyautogui on macOS Retina), it should call helpers in `python_input_control.platform` before issuing OS calls.
 
 ## Development notes
 

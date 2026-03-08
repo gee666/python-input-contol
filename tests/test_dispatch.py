@@ -9,6 +9,7 @@ from python_input_control.backends import BackendExecutionContext
 from python_input_control.dispatch import CommandDispatcher, parse_command
 from python_input_control.errors import ValidationError
 from python_input_control.models import (
+    KeyEscapeCommand,
     KeyTabCommand,
     ModifierKey,
     MouseButton,
@@ -77,11 +78,15 @@ class RecordingPointerMouseBackend:
 @dataclass
 class RecordingKeyboardBackend:
     pressed_tab_ids: list[str] = field(default_factory=list)
+    pressed_escape_ids: list[str] = field(default_factory=list)
     typed: list[str] = field(default_factory=list)
     select_all_calls: list[tuple[str, ModifierKey]] = field(default_factory=list)
 
     def press_tab(self, command, context) -> None:
         self.pressed_tab_ids.append(command.id)
+
+    def press_escape(self, command, context) -> None:
+        self.pressed_escape_ids.append(command.id)
 
     def type_text(self, command, context) -> None:
         self.typed.append(command.text)
@@ -222,6 +227,11 @@ def test_parse_command_requires_all_context_fields(base_context: dict[str, float
             {},
         ),
         (
+            build_message("key_escape"),
+            KeyEscapeCommand,
+            {},
+        ),
+        (
             build_message("type", params={"text": "hello", "wpm": 80.0}),
             TypeCommand,
             {"text": "hello", "wpm": 80.0},
@@ -269,6 +279,22 @@ def test_dispatch_select_all_and_delete_uses_platform_modifier(modifier: Modifie
 
     assert response.status == "ok"
     assert keyboard_backend.select_all_calls == [(f"clear-{modifier.value}", modifier)]
+
+
+def test_dispatch_key_escape_calls_keyboard_backend() -> None:
+    keyboard_backend = RecordingKeyboardBackend()
+    dispatcher = CommandDispatcher(
+        mouse_backend=RecordingMouseBackend(),
+        keyboard_backend=keyboard_backend,
+        platform=FakePlatform(),
+        rng=SeededRandom(123),
+        sleep=lambda _seconds: None,
+    )
+
+    response = dispatcher.handle_message(build_message("key_escape", command_id="esc-1"))
+
+    assert response.status == "ok"
+    assert keyboard_backend.pressed_escape_ids == ["esc-1"]
 
 
 def test_dispatch_rejects_unknown_command() -> None:

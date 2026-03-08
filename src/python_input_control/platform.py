@@ -100,9 +100,15 @@ class SystemPlatformAdapter:
 
 
 def translate_viewport_to_physical_screen(context: BrowserContext, viewport_x: float, viewport_y: float) -> ScreenPoint:
-    screen_x = context.screen_x + context.browser_chrome_width / 2.0 + viewport_x * context.device_pixel_ratio
-    screen_y = context.screen_y + context.browser_chrome_height + viewport_y * context.device_pixel_ratio
-    return ScreenPoint(x=screen_x, y=screen_y)
+    viewport_origin_x = context.screen_x + context.browser_chrome_width / 2.0
+    viewport_origin_y = context.screen_y + context.browser_chrome_height
+    # Browser geometry collected from JavaScript is reported in browser/CSS units.
+    # Convert the full viewport origin plus target point into physical pixels as one step
+    # so HiDPI scaling does not leave a constant offset based on the window position.
+    return ScreenPoint(
+        x=(viewport_origin_x + viewport_x) * context.device_pixel_ratio,
+        y=(viewport_origin_y + viewport_y) * context.device_pixel_ratio,
+    )
 
 
 def adapt_point_for_pyautogui(point: ScreenPoint, context: BrowserContext, platform_name: str) -> ScreenPoint:

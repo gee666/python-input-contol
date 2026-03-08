@@ -94,12 +94,12 @@ class DesktopHarness:
         viewport_width = float(viewport["width"])
         viewport_height = float(viewport["height"])
         return {
-            "screenX": float(viewport["root_x"]),
-            "screenY": float(viewport["root_y"]),
-            "outerHeight": viewport_height,
-            "innerHeight": viewport_height,
-            "outerWidth": viewport_width,
-            "innerWidth": viewport_width,
+            "screenX": float(viewport["root_x"]) / self.device_pixel_ratio,
+            "screenY": float(viewport["root_y"]) / self.device_pixel_ratio,
+            "outerHeight": viewport_height / self.device_pixel_ratio,
+            "innerHeight": viewport_height / self.device_pixel_ratio,
+            "outerWidth": viewport_width / self.device_pixel_ratio,
+            "innerWidth": viewport_width / self.device_pixel_ratio,
             "devicePixelRatio": self.device_pixel_ratio,
             "scrollX": 0.0,
             "scrollY": 0.0,

@@ -12,6 +12,7 @@ CommandName: TypeAlias = Literal[
     "mouse_double_click",
     "scroll",
     "key_tab",
+    "key_escape",
     "type",
     "select_all_and_delete",
 ]
@@ -97,6 +98,11 @@ class KeyTabCommand(BaseCommand):
 
 
 @dataclass(frozen=True)
+class KeyEscapeCommand(BaseCommand):
+    pass
+
+
+@dataclass(frozen=True)
 class TypeCommand(BaseCommand):
     text: str
     wpm: float | None = None
@@ -113,6 +119,7 @@ Command: TypeAlias = (
     | MouseDoubleClickCommand
     | ScrollCommand
     | KeyTabCommand
+    | KeyEscapeCommand
     | TypeCommand
     | SelectAllAndDeleteCommand
 )

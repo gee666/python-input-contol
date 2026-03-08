@@ -24,8 +24,17 @@ src/python_input_control/backends/mouse_backend.py
 src/python_input_control/backends/pyautogui_mouse_backend.py
 src/python_input_control/backends/pynput_keyboard.py
 tests/test_cli.py
+tests/test_dispatch.py
 tests/test_install_script.py
 tests/test_installer.py
+tests/test_installer_main.py
+tests/test_installer_windows_registry.py
+tests/test_integration_desktop.py
 tests/test_mouse_motion.py
+tests/test_permissions.py
+tests/test_platform.py
+tests/test_platform_bounds.py
+tests/test_protocol.py
 tests/test_pyautogui_mouse_backend.py
 tests/test_pynput_keyboard_backend.py
+tests/test_timing.py

@@ -2,6 +2,7 @@
 .agent-task
 .pytest_cache
 .venv
+build
 __pycache__/
 *.py[cod]
 *$py.class

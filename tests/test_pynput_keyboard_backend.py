@@ -10,7 +10,7 @@ from python_input_control.backends.pynput_keyboard import (
     keyboard_key_for_modifier,
     plan_character_key,
 )
-from python_input_control.models import BrowserContext, KeyTabCommand, ModifierKey, SelectAllAndDeleteCommand, TypeCommand
+from python_input_control.models import BrowserContext, KeyEscapeCommand, KeyTabCommand, ModifierKey, SelectAllAndDeleteCommand, TypeCommand
 from python_input_control.platform import SystemPlatformAdapter
 
 
@@ -102,6 +102,20 @@ def test_press_tab_taps_tab_key() -> None:
     assert sink.events == [
         ("press_key", KeyboardKey.TAB),
         ("release_key", KeyboardKey.TAB),
+    ]
+    assert sleep.calls == []
+
+
+def test_press_escape_taps_escape_key() -> None:
+    sink = RecordingSink()
+    backend = PynputKeyboardBackend(sink_factory=lambda: sink)
+    sleep = RecordingSleep()
+
+    backend.press_escape(KeyEscapeCommand(id="esc-1", context=_browser_context()), _runtime(FakeRandom(), sleep))
+
+    assert sink.events == [
+        ("press_key", KeyboardKey.ESCAPE),
+        ("release_key", KeyboardKey.ESCAPE),
     ]
     assert sleep.calls == []
 

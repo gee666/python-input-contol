@@ -40,6 +40,9 @@ class RecordingKeyboardBackend:
     def press_tab(self, command, context) -> None:
         self.tab_ids.append(command.id)
 
+    def press_escape(self, command, context) -> None:  # pragma: no cover - not used here
+        raise AssertionError("unexpected press_escape")
+
     def type_text(self, command, context) -> None:  # pragma: no cover - not used here
         raise AssertionError("unexpected type_text")
 
