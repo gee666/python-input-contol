@@ -1,0 +1,3 @@
+[console_scripts]
+python-input-control = python_input_control.cli:main
+python-input-control-install = python_input_control.installer:main

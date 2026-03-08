@@ -1,0 +1,14 @@
+pynput>=1.7.7
+
+[backends]
+numpy>=1.26
+pyautogui>=0.9.54
+
+[dev]
+pytest>=8.0
+pytest-mock>=3.14
+
+[standalone]
+numpy>=1.26
+pyautogui>=0.9.54
+pyinstaller>=6.0

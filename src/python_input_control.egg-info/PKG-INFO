@@ -1,0 +1,232 @@
+Metadata-Version: 2.4
+Name: python-input-control
+Version: 0.1.0
+Summary: Chrome native messaging host architecture for browser-driven OS input automation.
+Author: Workshop
+License: MIT
+Project-URL: Homepage, https://example.invalid/python-input-control
+Project-URL: Repository, https://example.invalid/python-input-control
+Keywords: chrome-native-messaging,input-automation,mouse,keyboard,protocol
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pynput>=1.7.7
+Provides-Extra: backends
+Requires-Dist: numpy>=1.26; extra == "backends"
+Requires-Dist: pyautogui>=0.9.54; extra == "backends"
+Provides-Extra: standalone
+Requires-Dist: numpy>=1.26; extra == "standalone"
+Requires-Dist: pyautogui>=0.9.54; extra == "standalone"
+Requires-Dist: pyinstaller>=6.0; extra == "standalone"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.14; extra == "dev"
+
+# python-input-control
+
+Architecture-first Python package for a Chrome Native Messaging host that validates browser-issued input commands and dispatches them to injected mouse and keyboard backends.
+
+## Current scope
+
+This layer implements:
+
+- Chrome Native Messaging framing over stdin/stdout
+- Sequential host processing with one response per request
+- Stable response envelopes: `id`, `status`, `error`
+- Validation and typed command models for all PRD commands
+- Coordinate translation helpers for browser viewport -> physical screen space
+- Injectable platform, randomness, timing, mouse, and keyboard contracts
+- Concrete `pyautogui` and `pynput` runtime backends for mouse and keyboard automation
+- Chrome native host manifest generation and platform registration helpers
+- A repo-level installer that can `pip install` the package and register the host
+
+The default CLI wires both concrete backends when their runtime dependencies are present and reports explicit backend availability when they are not.
+
+## Package layout
+
+- `python_input_control.protocol` — framing, JSON decoding, sequential host loop
+- `python_input_control.dispatch` — request validation and command routing
+- `python_input_control.models` — typed command and response models
+- `python_input_control.platform` — OS detection, modifier selection, coordinate helpers, and bounds helpers
+- `python_input_control.randomness` — seeded RNG wrapper for deterministic tests
+- `python_input_control.timing` — pure timing helpers used by backend humanization logic
+- `python_input_control.mouse_motion` — Bézier path generation, scroll planning, and post-action timing helpers
+- `python_input_control.backends` — backend execution context and interface contracts
+- `python_input_control.backends.pyautogui_mouse_backend` — concrete mouse backend wiring
+- `python_input_control.backends.pynput_keyboard` — concrete keyboard backend and testable key-emission helpers
+- `python_input_control.installer` — native host manifest planning, installation, uninstall, and verification
+- `python_input_control.permissions` — macOS Accessibility permission guidance helpers
+
+## Installation
+
+Install the package with runtime backend dependencies and register the Chrome native host manifest (use a Python 3.11+ interpreter):
+
+```bash
+python3 install.py --extension-id <your-extension-id>
+```
+
+Useful installer options:
+
+- `--editable` — install the package in editable mode
+- `--with-standalone` — also install the `pyinstaller` extra
+- `--skip-pip-install` — only write or verify the manifest registration
+- `--host-path <path>` — override the launcher path stored in the manifest
+- `--manifest-path <path>` — override the manifest file location
+- `--platform linux|macos|windows` — force a platform target for dry runs or tests
+- `--dry-run` — print the planned pip and manifest commands without changing the system
+
+You can also call the package installer entry point directly after installation:
+
+```bash
+python-input-control-install install --extension-id <your-extension-id>
+python-input-control-install verify --extension-id <your-extension-id>
+python-input-control-install uninstall
+```
+
+### Chrome registration paths
+
+The installer writes the native host manifest to the platform-specific Chrome location required by the PRD:
+
+- **Linux:** `~/.config/google-chrome/NativeMessagingHosts/<host>.json`
+- **macOS:** `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/<host>.json`
+- **Windows:** manifest JSON under `%LOCALAPPDATA%\python-input-control\NativeMessagingHosts\<host>.json` plus registry key `HKCU\Software\Google\Chrome\NativeMessagingHosts\<host>`
+
+Default host name:
+
+- `com.workshop.python_input_control`
+
+The generated manifest stores `allowed_origins` in the required Chrome form:
+
+- `chrome-extension://<extension-id>/`
+
+## CLI
+
+Run the native host:
+
+```bash
+python3 -m python_input_control.cli
+```
+
+or after installation:
+
+```bash
+python-input-control
+```
+
+Useful options:
+
+- `--seed <value>` — deterministic seed passed to backend execution context
+- `--backend-status` — print the current default backend wiring and exit
+- `--check-permissions` — print runtime permission status and macOS guidance, then exit
+
+## Native messaging contract
+
+Incoming messages must be UTF-8 JSON objects framed with a 4-byte native-endian unsigned length prefix.
+
+Example request:
+
+```json
+{
+  "id": "1234",
+  "command": "mouse_move",
+  "params": {"x": 640, "y": 480, "duration_ms": 400},
+  "context": {
+    "screenX": 100,
+    "screenY": 50,
+    "outerHeight": 900,
+    "innerHeight": 815,
+    "outerWidth": 1280,
+    "innerWidth": 1280,
+    "devicePixelRatio": 2,
+    "scrollX": 0,
+    "scrollY": 0
+  }
+}
+```
+
+Example response:
+
+```json
+{
+  "id": "1234",
+  "status": "ok",
+  "error": null
+}
+```
+
+## macOS Accessibility guidance
+
+Real mouse and keyboard automation on macOS requires Accessibility permission.
+
+Check guidance without starting the host loop:
+
+```bash
+python-input-control --check-permissions
+```
+
+The installer also prints a reminder when it detects that Accessibility trust is missing during registration on macOS. The runtime CLI now refuses to start the native host loop on macOS when Accessibility permission is missing, prints the same actionable guidance to stderr, and exits with code `1`.
+
+## Standalone packaging
+
+Install the runtime backend dependencies plus the PyInstaller build tooling:
+
+```bash
+pip install .[standalone]
+```
+
+A PyInstaller spec file is included at:
+
+- `packaging/pyinstaller/python-input-control.spec`
+
+Example build command:
+
+```bash
+pyinstaller packaging/pyinstaller/python-input-control.spec
+```
+
+Register the built binary as the Chrome native host without reinstalling the Python package (`dist/python-input-control.exe` on Windows):
+
+```bash
+python3 install.py \
+  --skip-pip-install \
+  --host-path dist/python-input-control \
+  --extension-id <your-extension-id>
+```
+
+Then verify the generated registration:
+
+```bash
+PYTHONPATH=src python3 -m python_input_control.installer verify \
+  --host-path dist/python-input-control \
+  --extension-id <your-extension-id>
+```
+
+## Backend contracts for follow-up engineers
+
+Concrete backends must implement the protocols in:
+
+- `src/python_input_control/backends/mouse_backend.py`
+- `src/python_input_control/backends/keyboard_backend.py`
+
+Dispatch passes a `BackendExecutionContext` containing:
+
+- `platform` — platform adapter and screen-bounds source
+- `rng` — deterministic random source
+- `sleep` — injectable sleep function for tests
+
+Mouse backends receive translated **physical screen coordinates**. If a backend needs a platform-specific coordinate adaptation step (for example pyautogui on macOS Retina), it should call helpers in `python_input_control.platform` before issuing OS calls.
+
+## Development notes
+
+- All command validation failures return `status: "error"` without crashing the host.
+- Malformed JSON requests also return a framed error response when the payload can still be read.
+- Stream framing failures are treated as fatal because the byte stream can no longer be trusted.
