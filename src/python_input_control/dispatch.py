@@ -9,6 +9,7 @@ from .backends import BackendExecutionContext
 from .backends.keyboard_backend import KeyboardBackend, UnsupportedKeyboardBackend
 from .backends.mouse_backend import MouseBackend, UnsupportedMouseBackend
 from .errors import (
+    CommandCancelledError,
     CommandExecutionError,
     CoordinateOutOfBoundsError,
     DesktopBoundsUnavailableError,
@@ -57,13 +58,19 @@ class CommandDispatcher:
         platform: PlatformAdapter | None = None,
         rng: RandomSource | None = None,
         sleep=time.sleep,
+        cancel_event=None,
     ) -> None:
+        import threading
         self.mouse_backend = mouse_backend or UnsupportedMouseBackend()
         self.keyboard_backend = keyboard_backend or UnsupportedKeyboardBackend()
+        # Each dispatcher owns a cancel_event.  Callers can set() / clear() it to
+        # stop the currently executing command between sleep intervals.
+        self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self.runtime = BackendExecutionContext(
             platform=platform or SystemPlatformAdapter(),
             rng=rng or SeededRandom(),
             sleep=sleep,
+            cancel_event=self.cancel_event,
         )
 
     def handle_message(self, raw_message: Mapping[str, Any]) -> ResponseEnvelope:
@@ -72,6 +79,8 @@ class CommandDispatcher:
             command = parse_command(raw_message)
             self.dispatch(command)
             return ResponseEnvelope.ok(command.id)
+        except CommandCancelledError:
+            return ResponseEnvelope.error_response(command_id, "Command cancelled")
         except InputControlError as exc:
             return ResponseEnvelope.error_response(exc.command_id or command_id, str(exc))
         except Exception as exc:  # pragma: no cover - defensive fallback

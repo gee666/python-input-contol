@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol
 
-from ..errors import BackendUnavailableError
+from ..errors import BackendUnavailableError, CommandCancelledError
 from ..models import PressKeyCommand, PressShortcutCommand, TypeCommand
 from ..randomness import RandomSource
 from ..timing import jittered_delay_ms, wpm_to_inter_key_delay_ms
@@ -414,4 +414,11 @@ def extra_pause_after_character_ms(character: str, rng: RandomSource) -> float:
 
 
 def _sleep_ms(context: BackendExecutionContext, delay_ms: float) -> None:
-    context.sleep(max(0.0, delay_ms) / 1000.0)
+    """Sleep for *delay_ms* milliseconds, waking early if cancel_event is set."""
+    seconds = max(0.0, delay_ms) / 1000.0
+    ev = context.cancel_event
+    if ev is not None:
+        if ev.wait(seconds):          # returns True when the event fires = cancel
+            raise CommandCancelledError("Command cancelled", None)
+    else:
+        context.sleep(seconds)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..errors import BackendUnavailableError
+from ..errors import BackendUnavailableError, CommandCancelledError
 from ..models import BrowserContext, MouseButton, MouseClickCommand, MouseMoveCommand, ScreenPoint, ScrollCommand
 from ..mouse_motion import (
     build_mouse_path,
@@ -91,7 +91,7 @@ class PyAutoGuiMouseBackend(MouseBackend):
         for index in range(command.count):
             self._button_press(command.button, hold_ms, context)
             if index < command.count - 1:
-                context.sleep(interval_ms / 1000.0)
+                _sleep(context, interval_ms / 1000.0)
         self._post_action_pause(context)
 
     def scroll(self, command: ScrollCommand, target: ScreenPoint, context: BackendExecutionContext) -> None:
@@ -103,7 +103,7 @@ class PyAutoGuiMouseBackend(MouseBackend):
             if step.horizontal_ticks:
                 self.controller.hscroll(step.horizontal_ticks)
             if index < len(steps) - 1 and step.delay_s > 0:
-                context.sleep(step.delay_s)
+                _sleep(context, step.delay_s)
         self._post_action_pause(context)
 
     def _move_cursor(
@@ -134,7 +134,7 @@ class PyAutoGuiMouseBackend(MouseBackend):
         for point in backend_path[1:]:
             self.controller.move_to(point)
             if sleep_interval_s > 0:
-                context.sleep(sleep_interval_s)
+                _sleep(context, sleep_interval_s)
 
     def _adapt_path_for_backend(self, path: list[ScreenPoint], browser_context: BrowserContext, platform_name: str) -> list[ScreenPoint]:
         backend_path: list[ScreenPoint] = []
@@ -148,13 +148,23 @@ class PyAutoGuiMouseBackend(MouseBackend):
 
     def _button_press(self, button: MouseButton, hold_ms: int, context: BackendExecutionContext) -> None:
         self.controller.mouse_down(button)
-        context.sleep(max(0.0, hold_ms / 1000.0))
+        _sleep(context, hold_ms / 1000.0)
         self.controller.mouse_up(button)
 
     def _post_action_pause(self, context: BackendExecutionContext) -> None:
         if not self.add_post_action_pause:
             return
-        context.sleep(default_post_action_pause_s(context.rng))
+        _sleep(context, default_post_action_pause_s(context.rng))
+
+
+def _sleep(context: BackendExecutionContext, seconds: float) -> None:
+    """Sleep for *seconds*, waking early if cancel_event is set."""
+    ev = context.cancel_event
+    if ev is not None:
+        if ev.wait(max(0.0, seconds)):
+            raise CommandCancelledError("Command cancelled", None)
+    else:
+        context.sleep(max(0.0, seconds))
 
 
 def build_default_mouse_backend() -> MouseBackend:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Event
 from typing import Callable
 
 from ..platform import PlatformAdapter
@@ -14,6 +15,10 @@ class BackendExecutionContext:
     platform: PlatformAdapter
     rng: RandomSource
     sleep: SleepFunction
+    # Optional cancellation event.  When set, interruptible sleeps raise
+    # CommandCancelledError so the current command stops between keystrokes /
+    # motion steps without waiting for the full duration to elapse.
+    cancel_event: Event | None = None
 
 
 from .keyboard_backend import KeyboardBackend, UnsupportedKeyboardBackend

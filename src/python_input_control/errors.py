@@ -46,3 +46,7 @@ class BackendUnavailableError(InputControlError):
 
 class CommandExecutionError(InputControlError):
     """Raised when a backend fails while executing a validated command."""
+
+
+class CommandCancelledError(InputControlError):
+    """Raised when a running command is interrupted by a cancel/abort signal."""
