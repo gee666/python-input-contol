@@ -35,13 +35,33 @@ The default CLI wires both concrete backends when their runtime dependencies are
 
 ## Installation
 
-Install the package with runtime backend dependencies and register the Chrome native host manifest (use a Python 3.11+ interpreter):
+The native host installs **once per machine**. Extension IDs are managed separately —
+any number of extensions can share a single host via the allow-list.
+
+Install the package with runtime backend dependencies and register the Chrome native
+host manifest (use a Python 3.11+ interpreter):
+
+```bash
+# 1. Install the native host once (no extension ID required)
+python3 install.py
+# or, after pip installation:
+python-input-control-install install
+
+# 2. Allow one or more browser extensions to use it
+python-input-control-install allow <EXTENSION_ID> [<EXTENSION_ID> ...]
+
+# Inspect / revoke access at any time
+python-input-control-install list-allowed
+python-input-control-install disallow <EXTENSION_ID>
+```
+
+As a one-liner convenience you can still seed the allow-list at install time:
 
 ```bash
 python3 install.py --extension-id <your-extension-id>
 ```
 
-Useful installer options:
+Useful `install.py` options:
 
 - `--editable` — install the package in editable mode
 - `--with-standalone` — also install the `pyinstaller` extra
@@ -51,13 +71,30 @@ Useful installer options:
 - `--platform linux|macos|windows` — force a platform target for dry runs or tests
 - `--dry-run` — print the planned pip and manifest commands without changing the system
 
-You can also call the package installer entry point directly after installation:
+### CLI reference
 
-```bash
-python-input-control-install install --extension-id <your-extension-id>
-python-input-control-install verify --extension-id <your-extension-id>
-python-input-control-install uninstall
-```
+After installation, the following subcommands are available via
+`python-input-control-install` (or `python -m python_input_control.installer`):
+
+- `install` — write the manifest and (on Windows) register the pointer. Accepts
+  optional `--extension-id` flags to seed the allow-list; safe to run with none.
+- `verify` — validate an installed manifest + registry pointer.
+- `uninstall` — remove the manifest + registry pointer.
+- `allow <EXTENSION_ID> [<EXTENSION_ID> ...]` — append extension IDs to the
+  allow-list of an already-installed manifest. Accepts raw IDs, full
+  `chrome-extension://ID/` URLs, and trailing-slash variants. Use `--dry-run`
+  to preview changes without writing.
+- `disallow <EXTENSION_ID> [...]` — remove extension IDs from the allow-list.
+  Leaving the list empty is valid; it just means no extension can use the host
+  until `allow` is called again.
+- `list-allowed` — print the raw extension IDs currently in the allow-list,
+  one per line. Add `--json` for a machine-readable single-line payload.
+
+All three of `allow` / `disallow` / `list-allowed` require that the manifest has
+already been written by `install`; they exit with code `2` and point you at the
+`install` command otherwise. They never touch the Windows registry — the
+registry pointer is written once by `install` and keeps pointing at the same
+manifest file regardless of allow-list mutations.
 
 ### Chrome registration paths
 

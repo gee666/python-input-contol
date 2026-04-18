@@ -83,9 +83,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.extension_id:
-        parser.error("the following arguments are required: --extension-id")
-
     repo_root = Path(__file__).resolve().parent
     pip_command = build_pip_command(
         sys.executable,

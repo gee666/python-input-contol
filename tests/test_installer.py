@@ -198,7 +198,9 @@ def test_verify_installation_reports_manifest_content_mismatch(tmp_path: Path) -
 
     assert any("Manifest name mismatch" in issue for issue in issues)
     assert any("Manifest path mismatch" in issue for issue in issues)
-    assert any("Manifest allowed_origins must be a non-empty list" in issue for issue in issues)
+    # allowed_origins=[] is now valid-but-unused; the mismatch line is an
+    # "allowed_origins mismatch" because the plan expected one origin.
+    assert any("allowed_origins mismatch" in issue for issue in issues)
 
 
 def test_verify_installation_rejects_non_discoverable_manifest_path_on_linux(tmp_path: Path) -> None:
