@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import json
 import os
 import re
@@ -8,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Callable, Iterable, Literal, Sequence
@@ -397,8 +401,85 @@ def _read_manifest_from_disk(manifest_path: Path) -> dict:
 
 
 def _write_manifest_to_disk(manifest_path: Path, manifest: HostManifest) -> None:
+    """Atomically replace *manifest_path* with the serialised *manifest*.
+
+    The manifest is written to a uniquely-named temp file in the same
+    directory and then ``os.replace()``d into place, so a concurrent reader
+    never observes a partially written JSON file and a crash mid-write leaves
+    the previous manifest intact.
+    """
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(manifest.to_json(), encoding="utf-8")
+    payload = manifest.to_json()
+    # ``delete=False`` so we can close the file before os.replace()-ing it;
+    # the file is guaranteed to live in the same directory as the target so
+    # replace() stays on the same filesystem and is atomic on POSIX / Windows.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=manifest_path.name + ".",
+        suffix=".tmp",
+        dir=str(manifest_path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                # fsync is best-effort; some filesystems / platforms do not
+                # support it for regular files and that must not break the
+                # installer.
+                pass
+        os.replace(tmp_path, manifest_path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+
+
+_MANIFEST_LOCK_RETRY_INTERVAL_SECONDS = 0.05
+_MANIFEST_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+@contextlib.contextmanager
+def _manifest_lock(manifest_path: Path):
+    """Serialise read/modify/write cycles on *manifest_path* across processes.
+
+    Implemented as a simple lock file created with ``O_EXCL`` + retry loop so
+    it works the same way on POSIX and Windows without extra dependencies.
+    The lock is released (and the lock file removed) on context exit.
+    """
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = manifest_path.with_name(manifest_path.name + ".lock")
+    deadline = time.monotonic() + _MANIFEST_LOCK_TIMEOUT_SECONDS
+    fd: int | None = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for manifest lock at {lock_path}"
+                )
+            time.sleep(_MANIFEST_LOCK_RETRY_INTERVAL_SECONDS)
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for manifest lock at {lock_path}"
+                    ) from exc
+                time.sleep(_MANIFEST_LOCK_RETRY_INTERVAL_SECONDS)
+                continue
+            raise
+    try:
+        yield
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
 
 
 def _load_manifest_allowed_origins(manifest_data: dict) -> list[str]:
@@ -489,9 +570,16 @@ def allow_command(
         print(_manifest_missing_message(resolved_path), file=sys.stderr)
         return 2
     try:
-        manifest_data = _read_manifest_from_disk(resolved_path)
-        new_manifest_data, added, skipped = mutate_allowed_origins(manifest_data, add=extension_ids)
-        manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+        if dry_run:
+            manifest_data = _read_manifest_from_disk(resolved_path)
+            new_manifest_data, added, skipped = mutate_allowed_origins(manifest_data, add=extension_ids)
+            manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+        else:
+            with _manifest_lock(resolved_path):
+                manifest_data = _read_manifest_from_disk(resolved_path)
+                new_manifest_data, added, skipped = mutate_allowed_origins(manifest_data, add=extension_ids)
+                manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+                _write_manifest_to_disk(resolved_path, manifest)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -501,9 +589,6 @@ def allow_command(
         print(f"{prefix} {eid}")
     for eid in skipped:
         print(f"Already present: {eid}")
-
-    if not dry_run:
-        _write_manifest_to_disk(resolved_path, manifest)
 
     allowed = _extract_extension_ids(manifest.allowed_origins)
     summary_verb = "would allow" if dry_run else "now allows"
@@ -527,9 +612,16 @@ def disallow_command(
         print(_manifest_missing_message(resolved_path), file=sys.stderr)
         return 2
     try:
-        manifest_data = _read_manifest_from_disk(resolved_path)
-        new_manifest_data, removed, skipped = mutate_allowed_origins(manifest_data, remove=extension_ids)
-        manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+        if dry_run:
+            manifest_data = _read_manifest_from_disk(resolved_path)
+            new_manifest_data, removed, skipped = mutate_allowed_origins(manifest_data, remove=extension_ids)
+            manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+        else:
+            with _manifest_lock(resolved_path):
+                manifest_data = _read_manifest_from_disk(resolved_path)
+                new_manifest_data, removed, skipped = mutate_allowed_origins(manifest_data, remove=extension_ids)
+                manifest = _rebuild_manifest(new_manifest_data, host_name=host_name)
+                _write_manifest_to_disk(resolved_path, manifest)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -539,9 +631,6 @@ def disallow_command(
         print(f"{prefix} {eid}")
     for eid in skipped:
         print(f"Not present: {eid}")
-
-    if not dry_run:
-        _write_manifest_to_disk(resolved_path, manifest)
 
     allowed = _extract_extension_ids(manifest.allowed_origins)
     summary_verb = "would allow" if dry_run else "now allows"

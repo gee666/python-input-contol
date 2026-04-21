@@ -2,14 +2,73 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-import functools
 import re
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 from .models import BrowserContext, ModifierKey, ScreenPoint
+
+# Virtual desktop bounds can change at runtime: monitors get plugged/unplugged,
+# the user rearranges displays, scaling changes, or the first lookup fails
+# transiently at startup.  Cache successful results for a short TTL so repeated
+# pointer-command validation stays fast, but expire quickly enough that we
+# pick up display changes.  ``None`` results are never cached – they are
+# retried on the very next call so an early-startup failure does not pin us
+# to "unavailable" for the whole process lifetime.
+_VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS = 5.0
+
+_T = TypeVar("_T")
+
+
+class _TtlCache:
+    """Tiny TTL cache for a single value produced by a zero-arg callable.
+
+    Only successful (non-``None``) results are cached.  ``cache_clear()``
+    mirrors the ``functools.lru_cache`` interface so existing tests keep
+    working.
+    """
+
+    __slots__ = ("_func", "_ttl", "_lock", "_value", "_expires_at", "__wrapped__")
+
+    def __init__(self, func: Callable[[], _T | None], ttl: float) -> None:
+        self._func = func
+        self._ttl = ttl
+        self._lock = threading.Lock()
+        self._value: _T | None = None
+        self._expires_at: float = 0.0
+        self.__wrapped__ = func
+
+    def __call__(self) -> _T | None:
+        now = time.monotonic()
+        with self._lock:
+            if self._value is not None and now < self._expires_at:
+                return self._value
+        result = self._func()
+        with self._lock:
+            if result is not None:
+                self._value = result
+                self._expires_at = time.monotonic() + self._ttl
+            else:
+                # Do not cache failures – retry on the very next call.
+                self._value = None
+                self._expires_at = 0.0
+        return result
+
+    def cache_clear(self) -> None:
+        with self._lock:
+            self._value = None
+            self._expires_at = 0.0
+
+
+def _ttl_cached(ttl: float) -> Callable[[Callable[[], _T | None]], _TtlCache]:
+    def decorator(func: Callable[[], _T | None]) -> _TtlCache:
+        return _TtlCache(func, ttl)
+
+    return decorator
 
 _ACTIVE_MONITOR_PATTERN = re.compile(r"^\s*\d+:\s+\S+\s+(\d+)/\d+x(\d+)/\d+([+-]\d+)([+-]\d+)")
 _MACOS_CORE_GRAPHICS_LIBRARY_CANDIDATES = (
@@ -127,7 +186,7 @@ def clamp_point_to_bounds(point: ScreenPoint, bounds: VirtualDesktopBounds) -> S
     return bounds.clamp(point)
 
 
-@functools.lru_cache(maxsize=1)
+@_ttl_cached(_VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS)
 def _windows_virtual_desktop_bounds() -> VirtualDesktopBounds | None:
     try:
         user32 = ctypes.windll.user32
@@ -147,7 +206,7 @@ def _windows_virtual_desktop_bounds() -> VirtualDesktopBounds | None:
     return VirtualDesktopBounds(left=left, top=top, right=left + width, bottom=top + height)
 
 
-@functools.lru_cache(maxsize=1)
+@_ttl_cached(_VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS)
 def _macos_virtual_desktop_bounds() -> VirtualDesktopBounds | None:
     for display_source in (_macos_active_display_geometries_coregraphics, _macos_active_display_geometries_quartz):
         bounds = _virtual_desktop_bounds_from_display_geometries(display_source())
@@ -156,7 +215,7 @@ def _macos_virtual_desktop_bounds() -> VirtualDesktopBounds | None:
     return None
 
 
-@functools.lru_cache(maxsize=1)
+@_ttl_cached(_VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS)
 def _linux_virtual_desktop_bounds() -> VirtualDesktopBounds | None:
     try:
         result = subprocess.run(

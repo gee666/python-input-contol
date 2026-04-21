@@ -547,3 +547,81 @@ def test_cli_allow_requires_extension_id(capsys) -> None:
         main(["allow", "--platform", "linux"])
     err = capsys.readouterr().err
     assert "EXTENSION_ID" in err
+
+
+def test_allow_disallow_concurrent_updates_do_not_lose_entries(tmp_path: Path) -> None:
+    """Regression for Medium #5: manifest updates must be atomic.
+
+    Fire many threads that concurrently allow/disallow distinct extension
+    ids and assert that the final manifest is the union of the allow ops
+    (minus the intentionally-removed ids) – i.e. no concurrent allow was
+    lost to a racing read/modify/write cycle.
+    """
+    import threading as _threading
+
+    manifest_path, _exe = _make_installed_plan(tmp_path, extension_ids=[])
+
+    # 16-char [a-z0-9] ids so they pass validation.
+    alphabet = "abcdefghijklmnop"
+
+    def _id(prefix: str, index: int) -> str:
+        suffix = format(index, "04d")
+        # Build a valid id by tiling the prefix and replacing the last 4 chars
+        # with the index (keeping it 16 chars total, all lowercase alnum).
+        base = (prefix * 4)[:12]
+        return (base + suffix)[:16]
+
+    allow_ids = [_id("allow", i) for i in range(20)]
+    remove_ids = allow_ids[:5]  # these ones get removed by a second wave
+
+    errors: list[BaseException] = []
+
+    def _allow_one(eid: str) -> None:
+        try:
+            allow_command(
+                extension_ids=[eid],
+                host_name="com.example.host",
+                manifest_path=manifest_path,
+                platform_name="linux",
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostics only
+            errors.append(exc)
+
+    threads = [_threading.Thread(target=_allow_one, args=(eid,)) for eid in allow_ids]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+        assert not t.is_alive()
+    assert errors == []
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    present = set(data["allowed_origins"])
+    for eid in allow_ids:
+        assert f"chrome-extension://{eid}/" in present, f"missing {eid} – concurrent allow was lost"
+
+    def _disallow_one(eid: str) -> None:
+        try:
+            disallow_command(
+                extension_ids=[eid],
+                host_name="com.example.host",
+                manifest_path=manifest_path,
+                platform_name="linux",
+            )
+        except BaseException as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [_threading.Thread(target=_disallow_one, args=(eid,)) for eid in remove_ids]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+        assert not t.is_alive()
+    assert errors == []
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    present = set(data["allowed_origins"])
+    for eid in remove_ids:
+        assert f"chrome-extension://{eid}/" not in present
+    for eid in allow_ids[5:]:
+        assert f"chrome-extension://{eid}/" in present, f"stray removal lost {eid}"

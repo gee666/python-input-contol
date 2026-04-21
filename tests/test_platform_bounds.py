@@ -158,3 +158,85 @@ def test_clamp_point_to_bounds_limits_coordinates() -> None:
     clamped = clamp_point_to_bounds(point, VirtualDesktopBounds(left=0.0, top=10.0, right=200.0, bottom=150.0))
 
     assert clamped == ScreenPoint(200.0, 10.0)
+
+
+def test_linux_virtual_desktop_bounds_refresh_after_ttl(monkeypatch) -> None:
+    """Regression for Medium #7: cached bounds must expire after the TTL.
+
+    Simulate two consecutive calls with different underlying geometries and
+    assert that the second call (after the TTL elapses) returns the new
+    geometry rather than the stale cached one.
+    """
+    import python_input_control.platform as platform_module
+
+    platform_module._linux_virtual_desktop_bounds.cache_clear()
+    # Shrink the TTL so the test runs quickly.
+    monkeypatch.setattr(platform_module, "_VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS", 0.05)
+    # Rebuild the cached callable so it picks up the tiny TTL.
+    monkeypatch.setattr(
+        platform_module,
+        "_linux_virtual_desktop_bounds",
+        platform_module._TtlCache(
+            platform_module._linux_virtual_desktop_bounds.__wrapped__,
+            platform_module._VIRTUAL_DESKTOP_BOUNDS_TTL_SECONDS,
+        ),
+    )
+
+    call_count = {"n": 0}
+    outputs = [
+        "Monitors: 1\n 0: +*eDP-1 1920/344x1080/194+0+0  eDP-1\n",
+        "Monitors: 1\n 0: +*eDP-1 2560/344x1440/194+0+0  eDP-1\n",
+    ]
+
+    def _fake_run(*args, **kwargs):
+        index = min(call_count["n"], len(outputs) - 1)
+        call_count["n"] += 1
+        return _FakeCompletedProcess(outputs[index])
+
+    monkeypatch.setattr(platform_module.subprocess, "run", _fake_run)
+
+    first = platform_module._linux_virtual_desktop_bounds()
+    assert first is not None
+    assert first.right == 1920.0
+
+    # Within the TTL: cached, no extra subprocess call.
+    again = platform_module._linux_virtual_desktop_bounds()
+    assert again == first
+    assert call_count["n"] == 1
+
+    # After the TTL: the cached value expires and we re-query, picking up
+    # the new geometry.
+    import time as _time
+    _time.sleep(0.08)
+    refreshed = platform_module._linux_virtual_desktop_bounds()
+    assert refreshed is not None
+    assert refreshed.right == 2560.0
+    assert call_count["n"] >= 2
+
+
+def test_linux_virtual_desktop_bounds_none_result_is_not_cached(monkeypatch) -> None:
+    """``None`` (detection failure) must be retried on the very next call."""
+    import python_input_control.platform as platform_module
+
+    platform_module._linux_virtual_desktop_bounds.cache_clear()
+
+    call_count = {"n": 0}
+
+    def _fake_run(*args, **kwargs):
+        call_count["n"] += 1
+        # Return invalid output the first time, valid the second.
+        if call_count["n"] == 1:
+            return _FakeCompletedProcess("", returncode=1)
+        return _FakeCompletedProcess(
+            "Monitors: 1\n 0: +*eDP-1 1920/344x1080/194+0+0  eDP-1\n"
+        )
+
+    monkeypatch.setattr(platform_module.subprocess, "run", _fake_run)
+
+    first = platform_module._linux_virtual_desktop_bounds()
+    assert first is None
+
+    second = platform_module._linux_virtual_desktop_bounds()
+    assert second is not None
+    assert second.right == 1920.0
+    assert call_count["n"] == 2

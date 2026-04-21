@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import json
 import queue
 import struct
@@ -16,6 +17,15 @@ from .models import ResponseEnvelope
 
 _NATIVE_MESSAGE_HEADER = struct.Struct("=I")
 _MAX_NATIVE_MESSAGE_SIZE = 4 * 1024 * 1024
+
+# Bounded inbox for the stdin reader thread.  The reader thread blocks briefly
+# on ``put`` and drops frames when shutting down, so a buggy/malicious client
+# cannot make the host accumulate unbounded framed messages in memory.
+_INBOX_MAX_FRAMES = 256
+_INBOX_PUT_TIMEOUT = 1.0
+# How often the main loop wakes up while a command thread is running so it can
+# notice the command thread exiting even if no new messages arrive.
+_MAIN_LOOP_POLL_INTERVAL = 0.05
 
 
 def _read_exact(stream: BinaryIO, length: int, allow_eof: bool) -> bytes | None:
@@ -81,144 +91,171 @@ class NativeMessagingHost:
     output_stream: BinaryIO
     error_stream: TextIO
 
-    def serve_forever(self) -> int:  # noqa: C901  (deliberately linear control flow)
+    def serve_forever(self) -> int:  # noqa: C901  (state machine kept in one place on purpose)
         """
         Serve native-messaging commands with support for mid-command cancellation.
 
-        Architecture
-        ------------
-        * A *stdin reader thread* (Thread A) reads raw messages from stdin and
-          puts them on an in-process queue.  It runs concurrently with command
-          execution so that a ``cancel`` command (or an EOF caused by the JS side
-          calling ``port.disconnect()``) is noticed immediately.
+        Scheduler / cancellation state machine
+        --------------------------------------
+        * A *stdin reader thread* reads framed messages from stdin and pushes
+          them onto a bounded inbox (``queue.Queue(maxsize=_INBOX_MAX_FRAMES)``).
+          It blocks briefly on ``put`` so the host applies back-pressure to a
+          fast writer; during shutdown the reader drops queued frames rather
+          than hang forever.
 
-        * The *main thread* (this method) dequeues messages and dispatches
-          commands.  Each command runs on a *command thread* (Thread B) so the
-          main thread can keep reading the queue (and therefore notice cancel/EOF)
-          while a long-running command such as ``type`` is executing.
+        * The *main loop* (this method) drains the inbox continuously.
+          - ``cancel`` and EOF are honored *immediately* even while a command
+            thread is running: the main loop never blocks on the command
+            thread's ``join()``.  Non-cancel commands queued behind a running
+            command are appended to ``pending_commands`` so they do not
+            prevent a later ``cancel``/EOF from being observed.
+          - A new regular command is only started when
+            ``current_cmd_thread is None`` *and* ``cancel_event`` is clear.
+            ``cancel_event`` is only cleared after the previous command thread
+            has actually exited, so if a backend ignores cancellation the host
+            refuses to start the next command until the in-flight one is truly
+            done (commands stay serialised in wall-clock time).
 
-        Cancellation flow
-        -----------------
-        When the extension calls ``stop()`` it disconnects the native-messaging
-        port (via ``InputControlBridge.abort()``).  Chrome closes Python's stdin,
-        which causes Thread A to read EOF and enqueue ``None``.  The main thread
-        then sets ``cancel_event``, which the running command's sleep loop checks
-        between every keystroke / motion step and raises ``CommandCancelledError``
-        to abort as soon as possible (within one inter-key delay, typically <100 ms).
-
-        A ``{"command": "cancel"}`` message sent explicitly before disconnecting
-        also triggers cancellation in the same way.
+        * Logging policy is centralised: every response that carries an
+          ``error`` is logged to stderr via ``_write_response_and_log`` exactly
+          once, and only at the point it is emitted on the wire.
         """
         cancel_event = self.dispatcher.cancel_event
-        msg_queue: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
+        inbox: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=_INBOX_MAX_FRAMES)
         write_lock = threading.Lock()
+        shutdown_flag = threading.Event()
 
-        # ── Thread A: read raw bytes from stdin ──────────────────────────────
+        # ── Stdin reader thread ─────────────────────────────────────────────
         def _stdin_reader() -> None:
-            while True:
+            while not shutdown_flag.is_set():
                 try:
                     payload = read_native_message(self.input_stream)
                 except RecoverableFramingError as exc:
-                    msg_queue.put(("recoverable_error", exc))
+                    if not _bounded_put(inbox, ("recoverable_error", exc), shutdown_flag):
+                        return
                     continue
                 except FramingError as exc:
-                    msg_queue.put(("fatal_error", exc))
+                    _bounded_put(inbox, ("fatal_error", exc), shutdown_flag)
                     return
-                msg_queue.put(("payload", payload))
-                if payload is None:  # EOF sentinel
+                if not _bounded_put(inbox, ("payload", payload), shutdown_flag):
+                    return
+                if payload is None:  # EOF sentinel – reader is done
                     return
 
         stdin_thread = threading.Thread(target=_stdin_reader, daemon=True)
         stdin_thread.start()
 
-        # ── Helper: write a response, swallowing broken-pipe errors ─────────
-        def _write_safe(response: ResponseEnvelope) -> None:
+        current_cmd_thread: threading.Thread | None = None
+        pending_commands: collections.deque[Mapping[str, Any]] = collections.deque()
+        eof_seen = False
+        fatal_exit_code: int | None = None
+
+        def _write_response_and_log(response: ResponseEnvelope) -> None:
+            """Emit ``response`` on stdout and, if it is an error, log it once."""
             try:
                 with write_lock:
                     self.write_response(response)
             except (BrokenPipeError, OSError):
                 pass  # port was closed by the time we tried to write
+            if response.status == "error" and response.error:
+                self._log(response.error)
 
-        current_cmd_thread: threading.Thread | None = None
-
-        # ── Main dispatch loop ───────────────────────────────────────────────
-        while True:
-            kind, item = msg_queue.get()
-
-            # ── Framing errors from Thread A ─────────────────────────────────
+        def _handle_item(kind: str, item: Any) -> None:
+            """Route one inbox item to the scheduler state."""
+            nonlocal eof_seen, fatal_exit_code
             if kind == "recoverable_error":
-                self._log(str(item))
-                _write_safe(ResponseEnvelope.error_response(None, str(item)))
-                continue
-
+                _write_response_and_log(ResponseEnvelope.error_response(None, str(item)))
+                return
             if kind == "fatal_error":
-                self._log(str(item))
-                _write_safe(ResponseEnvelope.error_response(None, str(item)))
+                _write_response_and_log(ResponseEnvelope.error_response(None, str(item)))
                 cancel_event.set()
-                if current_cmd_thread and current_cmd_thread.is_alive():
-                    current_cmd_thread.join(timeout=1.0)
-                return 1
-
-            # kind == "payload" from here on
+                eof_seen = True
+                fatal_exit_code = 1
+                return
+            # kind == "payload"
             payload: bytes | None = item
-
-            # ── EOF: JS disconnected the port ─────────────────────────────────
-            if payload is None:
-                cancel_event.set()
-                if current_cmd_thread and current_cmd_thread.is_alive():
-                    current_cmd_thread.join(timeout=1.0)
-                return 0
-
-            # ── Decode JSON ──────────────────────────────────────────────────
+            if payload is None:  # EOF
+                # EOF marks the end of input.  We do NOT implicitly set
+                # ``cancel_event`` here: doing so would abort an in-flight
+                # command and drop already-queued commands.  Callers that
+                # want abort-on-disconnect semantics should send an explicit
+                # ``cancel`` message before closing stdin.  Pending commands
+                # keep draining; once they and any running thread are done
+                # the main loop exits cleanly.
+                eof_seen = True
+                return
             try:
                 message = decode_json_message(payload)
             except ProtocolDecodeError as exc:
-                self._log(str(exc))
-                _write_safe(ResponseEnvelope.error_response(None, str(exc)))
-                continue
-
+                _write_response_and_log(ResponseEnvelope.error_response(None, str(exc)))
+                return
             command_id = _extract_command_id(message)
             command_name = message.get("command", "")
-
-            # ── 'cancel' command: stop whatever is running ────────────────────
             if command_name == "cancel":
+                # Cancel is honored immediately – even if queued regular
+                # commands are ahead of it, and even if the running worker
+                # ignores the event.  Pending commands are dropped so the
+                # cancel takes effect promptly, and ``cancel_event`` stays
+                # set until the running command thread (if any) actually
+                # exits so two commands can never overlap in wall-clock time.
                 cancel_event.set()
-                if current_cmd_thread and current_cmd_thread.is_alive():
-                    current_cmd_thread.join(timeout=1.0)
-                cancel_event.clear()
-                current_cmd_thread = None
-                _write_safe(ResponseEnvelope.ok(command_id))
-                continue
+                pending_commands.clear()
+                _write_response_and_log(ResponseEnvelope.ok(command_id))
+                return
+            pending_commands.append(message)
 
-            # ── Regular command ───────────────────────────────────────────────
-            # If a previous command thread is still alive (e.g. user sent two
-            # commands quickly without cancelling), wait for it to finish first
-            # so commands stay serialised.
-            if current_cmd_thread and current_cmd_thread.is_alive():
-                current_cmd_thread.join()
-
-            # Clear any leftover cancel signal before starting the new command.
-            cancel_event.clear()
-
-            def _run_command(msg: Mapping[str, Any] = message) -> None:
-                response = self.dispatcher.handle_message(msg)
-                _write_safe(response)
-
-            current_cmd_thread = threading.Thread(target=_run_command, daemon=True)
-            current_cmd_thread.start()
-            # ← do NOT join here; loop back to read the next queued message
-            #   so a cancel that arrives during execution is processed promptly.
-
-    def _handle_payload(self, payload: bytes) -> ResponseEnvelope:
         try:
-            message = decode_json_message(payload)
-        except ProtocolDecodeError as exc:
-            self._log(str(exc))
-            return ResponseEnvelope.error_response(None, str(exc))
-        response = self.dispatcher.handle_message(message)
-        if response.status == "error" and response.error:
-            self._log(response.error)
-        return response
+            while True:
+                # 1) Reap any finished command thread.  Only clear cancel_event
+                #    AFTER we have observed is_alive() == False, so an
+                #    uninterruptible command cannot race ahead of its cancel.
+                if current_cmd_thread is not None and not current_cmd_thread.is_alive():
+                    current_cmd_thread.join()
+                    current_cmd_thread = None
+                    cancel_event.clear()
+
+                # 2) Termination: EOF observed AND nothing still running AND
+                #    no regular commands still queued.  EOF alone does not
+                #    drop pending commands – the client may have pipelined
+                #    them before closing stdin – but an explicit ``cancel``
+                #    does (pending_commands is cleared in its handler).
+                if eof_seen and current_cmd_thread is None and not pending_commands:
+                    return fatal_exit_code if fatal_exit_code is not None else 0
+
+                # 3) Schedule the next regular command, but only when no
+                #    previous worker is still alive and no cancel is pending.
+                if (
+                    current_cmd_thread is None
+                    and pending_commands
+                    and not cancel_event.is_set()
+                ):
+                    message = pending_commands.popleft()
+
+                    def _run_command(msg: Mapping[str, Any] = message) -> None:
+                        response = self.dispatcher.handle_message(msg)
+                        _write_response_and_log(response)
+
+                    current_cmd_thread = threading.Thread(target=_run_command, daemon=True)
+                    current_cmd_thread.start()
+                    # Loop again so we keep draining the inbox concurrently.
+                    continue
+
+                # 4) Drain the inbox.  While a command is running we poll with
+                #    a short timeout so the loop can reap a finished worker
+                #    even if no new frames arrive.  While idle we block
+                #    indefinitely waiting for the next frame.
+                if current_cmd_thread is not None:
+                    try:
+                        kind, item = inbox.get(timeout=_MAIN_LOOP_POLL_INTERVAL)
+                    except queue.Empty:
+                        continue
+                else:
+                    kind, item = inbox.get()
+                _handle_item(kind, item)
+        finally:
+            # Signal the stdin reader to stop pushing to the inbox so it will
+            # not block forever on ``put`` once the main loop is gone.
+            shutdown_flag.set()
 
     def write_response(self, response: ResponseEnvelope) -> None:
         self.output_stream.write(encode_native_message(response))
@@ -227,6 +264,30 @@ class NativeMessagingHost:
     def _log(self, message: str) -> None:
         self.error_stream.write(f"python-input-control: {message}\n")
         self.error_stream.flush()
+
+
+def _bounded_put(
+    inbox: queue.Queue[tuple[str, Any]],
+    item: tuple[str, Any],
+    shutdown_flag: threading.Event,
+) -> bool:
+    """
+    Put ``item`` on the bounded inbox, applying back-pressure to the writer.
+
+    Returns True on success, False if the host is shutting down and the frame
+    had to be dropped.  Under sustained overload the reader thread is held
+    back (reducing stdin read rate) instead of growing the queue without
+    bound.
+    """
+    while not shutdown_flag.is_set():
+        try:
+            inbox.put(item, timeout=_INBOX_PUT_TIMEOUT)
+            return True
+        except queue.Full:
+            # Keep retrying while the host is still running so the frame is
+            # eventually delivered rather than silently dropped.
+            continue
+    return False
 
 
 def run_host(dispatcher: CommandDispatcher | None = None) -> int:

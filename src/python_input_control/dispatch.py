@@ -121,7 +121,10 @@ class CommandDispatcher:
             self.keyboard_backend.type_text(command, self.runtime)
             return
         if isinstance(command, PauseCommand):
-            self.runtime.sleep(command.duration_ms / 1000.0)
+            # Use the cancel-aware sleep so a long ``pause`` inside a
+            # sequence can be aborted by ``cancel_event`` just like the
+            # keyboard and mouse backends.
+            self.runtime.interruptible_sleep(command.duration_ms / 1000.0)
             return
         raise UnknownCommandError(f"Unsupported command type: {type(command).__name__}", command.id)
 
